@@ -1,4 +1,4 @@
 @echo off
 title tracking boxes @winterchroma
-python trackingboxes.py
+pythonw gui.py
 pause

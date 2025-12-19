@@ -10,7 +10,7 @@ numpy
 opencv
 
 # команда для установки библиотек (cmd)
-pip install moviepy==1.0.3 opencv-python numpy
+pip install moviepy==1.0.3 opencv-python numpy sv-ttk
 
 # использование
 засунуть содержимое архива в отдельную папку

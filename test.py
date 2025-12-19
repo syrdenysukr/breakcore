@@ -3,6 +3,7 @@ import numpy as np
 import moviepy.editor as mpe
 import random
 import os
+import math
 
 # --- Defaults ---
 DEFAULT_CONFIG = {
@@ -14,12 +15,12 @@ DEFAULT_CONFIG = {
     "OBJ_SIZE_MIN": 30,
     "OBJ_SIZE_MAX": 70,
     "STAR_POINTS": 5,
-    "LINE_COLOR": (255, 255, 255),
     "LINE_THICKNESS": 1,
     "SHAPE": "star"
+    # LINE_COLOR убран, так как для звезд цвет будет динамическим
 }
 
-# --- Tracking State (остаются глобальными, т.к. moviepy.fl не позволяет легко передавать состояние) ---
+# --- Состояние трекинга (глобальные переменные, так как moviepy.fl не позволяет легко передавать состояние) ---
 tracked_objects = []
 prev_gray = None
 frame_count = 0
@@ -36,12 +37,12 @@ def get_input(prompt, default, value_type=str, options=None):
         if user_input == "":
             return default
         
-        if options and user_input not in options:
+        if options and user_input.lower() not in options:
             print(f"Ошибка: выберите один из вариантов: {', '.join(options)}")
             continue
 
         try:
-            return value_type(user_input)
+            return value_type(user_input.lower()) if options else value_type(user_input)
         except ValueError:
             print("Ошибка: неверный тип данных. Попробуйте еще раз.")
 
@@ -53,14 +54,21 @@ class TrackedObject:
         self.creation_time = creation_time
         self.lifespan = random.uniform(config["OBJ_LIFESPAN_MIN"], config["OBJ_LIFESPAN_MAX"])
         self.size = random.randint(config["OBJ_SIZE_MIN"], config["OBJ_SIZE_MAX"])
+        # Добавляем случайную фазу для мерцания, чтобы звезды не мерцали синхронно
+        self.shimmer_phase = random.uniform(0, 2 * np.pi)
 
     def is_alive(self, current_time):
         return (current_time - self.creation_time) < self.lifespan
 
-def draw_star(img, center, size, color, thickness, star_points):
+def draw_star(img, center, size, thickness, star_points, current_time, creation_time, shimmer_phase):
     x, y = center
     outer_radius = size // 2
     inner_radius = outer_radius // 2
+    
+    # Расчет эффекта мерцания
+    age = current_time - creation_time
+    # Синусоида заставляет цвет пульсировать. Частоту можно изменить.
+    shimmer = (math.sin(age * 4 + shimmer_phase) + 1) / 2 # значение от 0 до 1
     
     points = []
     angle = np.pi / star_points
@@ -72,16 +80,27 @@ def draw_star(img, center, size, color, thickness, star_points):
         py = int(y + r * np.sin(current_angle))
         points.append((px, py))
 
-    pts = np.array(points, np.int32)
-    pts = pts.reshape((-1, 1, 2))
-    cv2.polylines(img, [pts], True, color, thickness)
+    # Рисуем каждый сегмент линии разным цветом для эффекта градиента
+    num_points = len(points)
+    for i in range(num_points):
+        p1 = points[i]
+        p2 = points[(i + 1) % num_points] # трюк для соединения последней точки с первой
+        
+        # Базовый серый цвет, который мерцает
+        base_gray = 120 + shimmer * 80 # от 120 до 200
+        # Добавляем эффект градиента для каждой линии
+        gradient_offset = (i / num_points) * 55 # от 0 до 55
+        line_gray = int(base_gray + gradient_offset)
+        
+        color = (line_gray, line_gray, line_gray)
+        cv2.line(img, p1, p2, color, thickness, lineType=cv2.LINE_AA)
 
 def draw_square(img, center, size, color, thickness):
     x, y = center
     half_size = size // 2
     pt1 = (x - half_size, y - half_size)
     pt2 = (x + half_size, y + half_size)
-    cv2.rectangle(img, pt1, pt2, color, thickness)
+    cv2.rectangle(img, pt1, pt2, color, thickness, lineType=cv2.LINE_AA)
 
 def process_frame_with_tracking(frame, t, config):
     global prev_gray, tracked_objects, frame_count, last_time
@@ -124,16 +143,29 @@ def process_frame_with_tracking(frame, t, config):
         for obj in tracked_objects:
             x, y = map(int, obj.point)
             
+            # --- Логика отрисовки ---
+            text_color = (255, 255, 255) # Белый текст по умолчанию
             if config['SHAPE'] == 'star':
-                draw_star(output_frame, (x, y), obj.size, config['LINE_COLOR'], config['LINE_THICKNESS'], config['STAR_POINTS'])
-            elif config['SHAPE'] == 'square':
-                draw_square(output_frame, (x,y), obj.size, config['LINE_COLOR'], config['LINE_THICKNESS'])
+                draw_star(output_frame, (x, y), obj.size, config['LINE_THICKNESS'], config['STAR_POINTS'], t, obj.creation_time, obj.shimmer_phase)
+                # Для звезд текст тоже может мерцать
+                shimmer_val = (math.sin((t - obj.creation_time) * 4 + obj.shimmer_phase) + 1) / 2
+                text_gray = int(155 + shimmer_val * 100)
+                text_color = (text_gray, text_gray, text_gray)
 
+            elif config['SHAPE'] == 'square':
+                # Квадраты используют один цвет, зададим его
+                square_color = (200, 200, 200) # Светло-серый
+                draw_square(output_frame, (x,y), obj.size, square_color, config['LINE_THICKNESS'])
+                text_color = square_color
+
+            # --- Отрисовка текста ---
             text_x = x - obj.size // 2
             text_y = y - obj.size // 2 - 5
-            cv2.putText(output_frame, obj.text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, config['LINE_COLOR'], 1)
+            cv2.putText(output_frame, obj.text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, lineType=cv2.LINE_AA)
 
         if len(tracked_objects) > 1:
+            # Соединительные линии сделаем немного тусклее
+            line_color = (100, 100, 100)
             num_lines = len(tracked_objects) // 2
             temp_list = random.sample(tracked_objects, len(tracked_objects))
             for i in range(num_lines):
@@ -141,7 +173,7 @@ def process_frame_with_tracking(frame, t, config):
                 obj2 = temp_list[i*2 + 1]
                 pt1 = tuple(map(int, obj1.point))
                 pt2 = tuple(map(int, obj2.point))
-                cv2.line(output_frame, pt1, pt2, config['LINE_COLOR'], config['LINE_THICKNESS'])
+                cv2.line(output_frame, pt1, pt2, line_color, config['LINE_THICKNESS'], lineType=cv2.LINE_AA)
 
     prev_gray = current_gray.copy()
     frame_count += 1
@@ -174,7 +206,7 @@ def run_video_processing(config, input_video_path, output_video_path):
     final_clip = clip.fl(processing_function)
 
     print(f"результат сохранен в {output_video_path}...")
-    final_clip.write_videofile(output_video_path, codec='libx264', audio_codec='aac', logger='bar')
+    final_clip.write_videofile(output_video_path, codec='libx264', audio_codec='aac', logger=None)
     print("Готово!")
 
 def main():
@@ -198,7 +230,7 @@ def main():
     
     if config["SHAPE"] == 'star':
         config["STAR_POINTS"] = get_input("Кол-во вершин у звезды", config["STAR_POINTS"], int)
-
+    
     config["LINE_THICKNESS"] = get_input("Толщина линий", config["LINE_THICKNESS"], int)
 
     config['feature_params'] = dict(
@@ -217,3 +249,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
